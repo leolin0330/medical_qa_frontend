@@ -204,7 +204,7 @@ class _QaPageState extends State<QaPage> {
       });
     } catch (e) {
       setState(() {
-        _history.add({'answer': '❌ 提問失敗：$e', 'sources': [], 'cost': {}});
+        _history.add({'answer': '❌ 提問失敗，須提供文件!：$e', 'sources': [], 'cost': {}});
       });
     } finally {
       setState(() => _asking = false);
