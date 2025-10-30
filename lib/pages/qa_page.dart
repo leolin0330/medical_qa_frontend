@@ -16,9 +16,9 @@ class _QaPageState extends State<QaPage> {
   final _api = ApiClient();
 
   // 檔案狀態
-  File? _file;               // Android / iOS
-  Uint8List? _fileBytes;     // Web
-  String? _fileName;         // 顯示檔名
+  File? _file; // Android / iOS
+  Uint8List? _fileBytes; // Web
+  String? _fileName; // 顯示檔名
 
   // UI 狀態
   String? _uploadMsg;
@@ -32,9 +32,9 @@ class _QaPageState extends State<QaPage> {
   List<Map<String, dynamic>> _history = [];
   bool _asking = false;
 
-  String _mode = 'auto';     // auto / doc / general
-  String? _collectionId;     // 之後可從「我的」頁帶入
-  List<String> _selectedSources=[]; // 若有多來源 UI，就用這個；沒有就保持空
+  String _mode = 'auto'; // auto / doc / general
+  String? _collectionId; // 之後可從「我的」頁帶入
+  List<String> _selectedSources = []; // 若有多來源 UI，就用這個；沒有就保持空
 
   double? _analysisCost;
 
@@ -45,6 +45,7 @@ class _QaPageState extends State<QaPage> {
   }
 
   // 選擇檔案（同時支援 Web 與 Android/iOS）
+
   Future<void> _pickFile() async {
     final result = await FilePicker.platform.pickFiles(
       allowMultiple: false,
@@ -62,6 +63,11 @@ class _QaPageState extends State<QaPage> {
         _file = (f.path != null) ? File(f.path!) : null;
         _fileBytes = null;
       }
+
+      //  關鍵：每次重新選檔都清除舊的文件 ID / 來源
+      _collectionId = null;
+      _selectedSources.clear();
+
       _uploadMsg = null;
       _answer = null;
       _sources = null;
@@ -84,8 +90,17 @@ class _QaPageState extends State<QaPage> {
         filename: _fileName,
         collectionId: _collectionId,
       );
+
       setState(() {
         _uploadMsg = '✅ 上傳完成：${resp['message'] ?? 'OK'}';
+
+        //  關鍵：記錄後端回傳的新 collection_id
+        if (resp.containsKey('collection_id')) {
+          _collectionId = resp['collection_id']?.toString();
+        } else if (resp.containsKey('collectionId')) {
+          _collectionId = resp['collectionId']?.toString();
+        }
+
         final costMap = _parseCost(resp);
         _lastUploadCost = costMap.isNotEmpty ? costMap : null;
       });
@@ -112,8 +127,11 @@ class _QaPageState extends State<QaPage> {
           'total_usd': c['total_usd'] ?? c['total'] ?? c['cost_usd'],
           'embed_usd': c['embed_usd'] ?? c['embedding'] ?? c['embedding_cost'],
           'chat_usd': c['chat_usd'] ?? c['chat'] ?? c['chat_cost'],
-          'transcribe_cost': c['transcribe_cost'] ?? c['transcribe'] ?? c['transcribe_cost_usd'],
-          'vision_cost': c['vision_cost'] ?? c['vision'] ?? c['vision_cost_usd'],
+          'transcribe_cost': c['transcribe_cost'] ??
+              c['transcribe'] ??
+              c['transcribe_cost_usd'],
+          'vision_cost':
+              c['vision_cost'] ?? c['vision'] ?? c['vision_cost_usd'],
         }..removeWhere((k, v) => v == null);
         if (kk.isNotEmpty) return kk;
       }
@@ -122,73 +140,76 @@ class _QaPageState extends State<QaPage> {
   }
 
 // 發問
-Future<void> _ask() async {
-  final q = _qCtrl.text.trim();
-  if (q.isEmpty) return;
+  Future<void> _ask() async {
+    final q = _qCtrl.text.trim();
+    if (q.isEmpty) return;
 
-  setState(() {
-    _asking = true;
-    _answer = null;
-    _sources = null;
-    _cost = null;
-  });
+    setState(() {
+      _asking = true;
+      _answer = null;
+      _sources = null;
+      _cost = null;
+    });
 
-  try {
-    Map<String, dynamic> resp;
-    final parts = q.split(RegExp(r'\s+'));
+    try {
+      Map<String, dynamic> resp;
+      final parts = q.split(RegExp(r'\s+'));
 
-    if (parts.isNotEmpty && _api.isUrl(parts[0])) {
-      // 🔹 URL 模式：不要帶 sources
-      final url = parts[0];
-      final query = parts.length > 1 ? parts.sublist(1).join(' ') : '';
-      resp = await _api.fetchUrl(url: url, query: query, mode: _mode);
-    } else {
-      // 🔹 一般提問：只有真的有來源時才帶 sources
-      List<String>? activeSources;
-      if (_selectedSources.isNotEmpty) {
-        activeSources = _selectedSources;
-      } else if (_collectionId != null && _collectionId!.isNotEmpty) {
-        activeSources = [_collectionId!];
+      if (parts.isNotEmpty && _api.isUrl(parts[0])) {
+        // 🔹 URL 模式：不要帶 sources
+        final url = parts[0];
+        final query = parts.length > 1 ? parts.sublist(1).join(' ') : '';
+        resp = await _api.fetchUrl(url: url, query: query, mode: _mode);
       } else {
-        activeSources = null; // ← 關鍵：沒有來源就完全不傳
+        // 🔹 一般提問：只有真的有來源時才帶 sources
+        List<String>? activeSources;
+        if (_selectedSources.isNotEmpty) {
+          activeSources = _selectedSources;
+        } else if (_collectionId != null && _collectionId!.isNotEmpty) {
+          activeSources = [_collectionId!];
+        } else {
+          activeSources = null; // ← 關鍵：沒有來源就完全不傳
+        }
+
+        resp = await _api.ask(
+          question: q,
+          mode: _mode,
+          sources: activeSources, // ← 新增參數
+        );
       }
 
-      resp = await _api.ask(
-        question: q,
-        mode: _mode,
-        sources: activeSources, // ← 新增參數
-      );
+      setState(() {
+        final answerText = resp['answer']?.toString();
+        final sourcesList = (resp['sources'] as List<dynamic>?) ?? [];
+        final costData = _parseCost(resp);
+        final combinedCost = {...?_lastUploadCost, ...costData};
+
+        final total = [
+          combinedCost['embed_usd'],
+          combinedCost['chat_usd'],
+          combinedCost['transcribe_cost'],
+          combinedCost['vision_cost'],
+        ].whereType<num>().fold(0.0, (sum, v) => sum + v);
+
+        combinedCost['total_usd'] = double.parse(total.toStringAsFixed(6));
+
+        _history.add({'answer': '👤 問：$q', 'sources': [], 'cost': {}});
+        _history.add({
+          'answer': answerText,
+          'sources': sourcesList,
+          'cost': combinedCost
+        });
+
+        _qCtrl.clear();
+      });
+    } catch (e) {
+      setState(() {
+        _history.add({'answer': '❌ 提問失敗：$e', 'sources': [], 'cost': {}});
+      });
+    } finally {
+      setState(() => _asking = false);
     }
-
-    setState(() {
-      final answerText = resp['answer']?.toString();
-      final sourcesList = (resp['sources'] as List<dynamic>?) ?? [];
-      final costData = _parseCost(resp);
-      final combinedCost = { ...?_lastUploadCost, ...costData };
-
-      final total = [
-        combinedCost['embed_usd'],
-        combinedCost['chat_usd'],
-        combinedCost['transcribe_cost'],
-        combinedCost['vision_cost'],
-      ].whereType<num>().fold(0.0, (sum, v) => sum + v);
-
-      combinedCost['total_usd'] = double.parse(total.toStringAsFixed(6));
-
-      _history.add({'answer': '👤 問：$q', 'sources': [], 'cost': {}});
-      _history.add({'answer': answerText, 'sources': sourcesList, 'cost': combinedCost});
-
-      _qCtrl.clear();
-    });
-  } catch (e) {
-    setState(() {
-      _history.add({'answer': '❌ 提問失敗：$e', 'sources': [], 'cost': {}});
-    });
-  } finally {
-    setState(() => _asking = false);
   }
-}
-
 
   @override
   Widget build(BuildContext context) {
@@ -227,7 +248,8 @@ Future<void> _ask() async {
                             ? const SizedBox(
                                 height: 16,
                                 width: 16,
-                                child: CircularProgressIndicator(strokeWidth: 2),
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2),
                               )
                             : const Text('上傳'),
                       ),
@@ -254,7 +276,8 @@ Future<void> _ask() async {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text('提問',
-                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                      style:
+                          TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
                   const SizedBox(height: 8),
                   TextField(
                     controller: _qCtrl,
@@ -270,7 +293,8 @@ Future<void> _ask() async {
                         items: const [
                           DropdownMenuItem(value: 'auto', child: Text('自動模式')),
                           DropdownMenuItem(value: 'doc', child: Text('僅文件')),
-                          DropdownMenuItem(value: 'general', child: Text('一般知識')),
+                          DropdownMenuItem(
+                              value: 'general', child: Text('一般知識')),
                         ],
                         onChanged: (v) => setState(() => _mode = v ?? 'auto'),
                       ),
@@ -281,7 +305,8 @@ Future<void> _ask() async {
                             ? const SizedBox(
                                 height: 16,
                                 width: 16,
-                                child: CircularProgressIndicator(strokeWidth: 2),
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2),
                               )
                             : const Text('送出'),
                       ),
@@ -301,17 +326,24 @@ Future<void> _ask() async {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      if (item['cost'] != null && (item['cost'] as Map).isNotEmpty) ...[
+                      if (item['cost'] != null &&
+                          (item['cost'] as Map).isNotEmpty) ...[
                         if ((item['cost'] as Map).containsKey('total_usd'))
-                          Text('總成本：\$${((item['cost'] as Map)['total_usd'] as num).toStringAsFixed(3)}'),
+                          Text(
+                              '總成本：\$${((item['cost'] as Map)['total_usd'] as num).toStringAsFixed(3)}'),
                         if ((item['cost'] as Map).containsKey('embed_usd'))
-                          Text('嵌入成本：\$${((item['cost'] as Map)['embed_usd'] as num).toStringAsFixed(3)}'),
+                          Text(
+                              '嵌入成本：\$${((item['cost'] as Map)['embed_usd'] as num).toStringAsFixed(3)}'),
                         if ((item['cost'] as Map).containsKey('chat_usd'))
-                          Text('聊天成本：\$${((item['cost'] as Map)['chat_usd'] as num).toStringAsFixed(3)}'),
-                        if ((item['cost'] as Map).containsKey('transcribe_cost'))
-                          Text('轉錄成本：\$${((item['cost'] as Map)['transcribe_cost'] as num).toStringAsFixed(3)}'),
+                          Text(
+                              '聊天成本：\$${((item['cost'] as Map)['chat_usd'] as num).toStringAsFixed(3)}'),
+                        if ((item['cost'] as Map)
+                            .containsKey('transcribe_cost'))
+                          Text(
+                              '轉錄成本：\$${((item['cost'] as Map)['transcribe_cost'] as num).toStringAsFixed(3)}'),
                         if ((item['cost'] as Map).containsKey('vision_cost'))
-                          Text('視覺成本：\$${((item['cost'] as Map)['vision_cost'] as num).toStringAsFixed(3)}'),
+                          Text(
+                              '視覺成本：\$${((item['cost'] as Map)['vision_cost'] as num).toStringAsFixed(3)}'),
                         const SizedBox(height: 6),
                       ],
                       SelectableText(item['answer']?.toString() ?? ''),
