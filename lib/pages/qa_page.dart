@@ -33,7 +33,7 @@ class _QaPageState extends State<QaPage> {
   bool _asking = false;
 
   String _mode = 'auto'; // auto / doc / general
-  String? _collectionId; // 之後可從「我的」頁帶入
+  String? _collectionId; // 後端回來的 collectionId
   List<String> _selectedSources = []; // 若有多來源 UI，就用這個；沒有就保持空
 
   double? _analysisCost;
@@ -94,12 +94,13 @@ class _QaPageState extends State<QaPage> {
       setState(() {
         _uploadMsg = '✅ 上傳完成：${resp['message'] ?? 'OK'}';
 
-        //  關鍵：記錄後端回傳的新 collection_id
-        if (resp.containsKey('collection_id')) {
-          _collectionId = resp['collection_id']?.toString();
-        } else if (resp.containsKey('collectionId')) {
-          _collectionId = resp['collectionId']?.toString();
-        }
+        // ✅ 只接受「有效的」 collectionId（排除 _default/空字串）
+        final cidRaw =
+            (resp['collection_id'] ?? resp['collectionId'])?.toString();
+        _collectionId =
+            (cidRaw != null && cidRaw.isNotEmpty && cidRaw != '_default')
+                ? cidRaw
+                : null;
 
         final costMap = _parseCost(resp);
         _lastUploadCost = costMap.isNotEmpty ? costMap : null;
@@ -165,10 +166,12 @@ class _QaPageState extends State<QaPage> {
         List<String>? activeSources;
         if (_selectedSources.isNotEmpty) {
           activeSources = _selectedSources;
-        } else if (_collectionId != null && _collectionId!.isNotEmpty) {
+        } else if (_collectionId != null &&
+            _collectionId!.isNotEmpty &&
+            _collectionId != '_default') {// ← 關鍵過濾
           activeSources = [_collectionId!];
         } else {
-          activeSources = null; // ← 關鍵：沒有來源就完全不傳
+          activeSources = null; // 沒有來源就完全不傳
         }
 
         resp = await _api.ask(
