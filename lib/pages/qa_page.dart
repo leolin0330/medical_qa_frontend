@@ -34,6 +34,7 @@ class _QaPageState extends State<QaPage> {
 
   String _mode = 'auto';     // auto / doc / general
   String? _collectionId;     // 之後可從「我的」頁帶入
+  List<String> _selectedSources=[]; // 若有多來源 UI，就用這個；沒有就保持空
 
   double? _analysisCost;
 
@@ -120,73 +121,74 @@ class _QaPageState extends State<QaPage> {
     return {};
   }
 
-  // 發問
-  Future<void> _ask() async {
-    final q = _qCtrl.text.trim();
-    if (q.isEmpty) return;
+// 發問
+Future<void> _ask() async {
+  final q = _qCtrl.text.trim();
+  if (q.isEmpty) return;
 
-    setState(() {
-      _asking = true;
-      _answer = null;
-      _sources = null;
-      _cost = null;
-    });
+  setState(() {
+    _asking = true;
+    _answer = null;
+    _sources = null;
+    _cost = null;
+  });
 
-    try {
-      Map<String, dynamic> resp;
-      final parts = q.split(RegExp(r'\s+'));
-      if (parts.isNotEmpty && _api.isUrl(parts[0])) {
-        final url = parts[0];
-        final query = parts.length > 1 ? parts.sublist(1).join(' ') : '';
-        resp = await _api.fetchUrl(url: url, query: query, mode: _mode);
+  try {
+    Map<String, dynamic> resp;
+    final parts = q.split(RegExp(r'\s+'));
+
+    if (parts.isNotEmpty && _api.isUrl(parts[0])) {
+      // 🔹 URL 模式：不要帶 sources
+      final url = parts[0];
+      final query = parts.length > 1 ? parts.sublist(1).join(' ') : '';
+      resp = await _api.fetchUrl(url: url, query: query, mode: _mode);
+    } else {
+      // 🔹 一般提問：只有真的有來源時才帶 sources
+      List<String>? activeSources;
+      if (_selectedSources.isNotEmpty) {
+        activeSources = _selectedSources;
+      } else if (_collectionId != null && _collectionId!.isNotEmpty) {
+        activeSources = [_collectionId!];
       } else {
-        resp = await _api.ask(question: q, mode: _mode);
+        activeSources = null; // ← 關鍵：沒有來源就完全不傳
       }
 
-      setState(() {
-        final answerText = resp['answer']?.toString();
-        final sourcesList = (resp['sources'] as List<dynamic>?) ?? [];
-        final costData = _parseCost(resp);
-        final combinedCost = {
-          ...?_lastUploadCost,
-          ...costData
-        };
-
-        final total = [
-          combinedCost['embed_usd'],
-          combinedCost['chat_usd'],
-          combinedCost['transcribe_cost'],
-          combinedCost['vision_cost'],
-        ].whereType<num>().fold(0.0, (sum, v) => sum + v);
-
-        combinedCost['total_usd'] = double.parse(total.toStringAsFixed(6));
-
-          _history.add({
-            'answer': '👤 問：$q',
-            'sources': [],
-            'cost': {}
-          });
-
-        _history.add({
-          'answer': answerText,
-          'sources': sourcesList,
-          'cost': combinedCost
-        });
-        // 清空輸入欄位
-        _qCtrl.clear();
-      });
-    } catch (e) {
-      setState(() {
-        _history.add({
-          'answer': '❌ 提問失敗：$e',
-          'sources': [],
-          'cost': {}
-        });
-      });
-    } finally {
-      setState(() => _asking = false);
+      resp = await _api.ask(
+        question: q,
+        mode: _mode,
+        sources: activeSources, // ← 新增參數
+      );
     }
+
+    setState(() {
+      final answerText = resp['answer']?.toString();
+      final sourcesList = (resp['sources'] as List<dynamic>?) ?? [];
+      final costData = _parseCost(resp);
+      final combinedCost = { ...?_lastUploadCost, ...costData };
+
+      final total = [
+        combinedCost['embed_usd'],
+        combinedCost['chat_usd'],
+        combinedCost['transcribe_cost'],
+        combinedCost['vision_cost'],
+      ].whereType<num>().fold(0.0, (sum, v) => sum + v);
+
+      combinedCost['total_usd'] = double.parse(total.toStringAsFixed(6));
+
+      _history.add({'answer': '👤 問：$q', 'sources': [], 'cost': {}});
+      _history.add({'answer': answerText, 'sources': sourcesList, 'cost': combinedCost});
+
+      _qCtrl.clear();
+    });
+  } catch (e) {
+    setState(() {
+      _history.add({'answer': '❌ 提問失敗：$e', 'sources': [], 'cost': {}});
+    });
+  } finally {
+    setState(() => _asking = false);
   }
+}
+
 
   @override
   Widget build(BuildContext context) {
