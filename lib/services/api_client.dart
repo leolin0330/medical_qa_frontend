@@ -53,14 +53,27 @@ class ApiClient {
     throw HttpException('Upload failed: ${streamed.statusCode} - $respStr');
   }
 
+  // 只改 ask()：沒來源就完全不帶 source，避免被判定「有文件」
   Future<Map<String, dynamic>> ask({
     required String question,
     String mode = 'auto',
+    int topK = 5,
+    List<String>? sources, // 可選：來源/collectionId 清單
   }) async {
-    final uri = Uri.parse('$kBaseUrl/ask');
-    final req = http.MultipartRequest('POST', uri);
-    req.fields['query'] = question;
-    req.fields['mode'] = mode;
+    // 1) 先組 URL；只有在 sources 有值時才加到 query string
+    String url = '$kBaseUrl/ask';
+    if (sources != null && sources.isNotEmpty) {
+      final qs = sources
+          .map((s) => 'source=${Uri.encodeQueryComponent(s)}')
+          .join('&');
+      url = '$url?$qs';
+    }
+
+    // 2) 其餘用 Multipart fields（FastAPI: query/模式/top_k 走表單 OK）
+    final req = http.MultipartRequest('POST', Uri.parse(url))
+      ..fields['query'] = question
+      ..fields['mode'] = mode
+      ..fields['top_k'] = topK.toString();
 
     final streamed = await req.send();
     final respStr = await streamed.stream.bytesToString();
@@ -69,6 +82,7 @@ class ApiClient {
     }
     throw HttpException('Ask failed: ${streamed.statusCode} - $respStr');
   }
+
 
   String? _guessContentType(String filename) {
     final lower = filename.toLowerCase();
