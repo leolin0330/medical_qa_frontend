@@ -1,400 +1,307 @@
-import 'dart:io' show File;
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show kIsWeb;
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:file_picker/file_picker.dart';
+
 import '../services/api_client.dart';
 
-class QaPage extends StatefulWidget {
-  const QaPage({super.key});
+class QAPage extends StatefulWidget {
+  const QAPage({super.key});
 
   @override
-  State<QaPage> createState() => _QaPageState();
+  State<QAPage> createState() => _QAPageState();
 }
 
-class _QaPageState extends State<QaPage> {
+class _QAPageState extends State<QAPage> {
   final _api = ApiClient();
-
-  // 檔案狀態
-  File? _file; // Android / iOS
-  Uint8List? _fileBytes; // Web
-  String? _fileName; // 顯示檔名
-
-  // UI 狀態
-  String? _uploadMsg;
-  bool _uploading = false;
-
   final _qCtrl = TextEditingController();
+
+  String? _lastCollectionId; // 最近一次上傳成功的 collectionId（例如 "_default"）
+  String? _uploadMessage; // 顯示上傳結果
+  bool _busy = false;
+
+  // 回答顯示
   String? _answer;
-  List<dynamic>? _sources;
-  Map<String, dynamic>? _cost; // { total_usd, embed_usd, chat_usd }
-  Map<String, dynamic>? _lastUploadCost; // 上次上傳的成本資訊
-  List<Map<String, dynamic>> _history = [];
-  bool _asking = false;
-
-  String _mode = 'auto'; // auto / doc / general
-  String? _collectionId; // 後端回來的 collectionId
-  List<String> _selectedSources = []; // 若有多來源 UI，就用這個；沒有就保持空
-
-  double? _analysisCost;
+  String? _mode; // "doc" / "general"
+  List<dynamic>? _sources; // 後端回來的來源清單
+  num _costTotal = 0, _costEmbed = 0, _costChat = 0, _costTrans = 0;
 
   @override
   void dispose() {
     _qCtrl.dispose();
+    _api.close();
     super.dispose();
   }
 
-  // 選擇檔案（同時支援 Web 與 Android/iOS）
-
-  Future<void> _pickFile() async {
-    final result = await FilePicker.platform.pickFiles(
-      allowMultiple: false,
-      withData: true, // Web 需要 bytes
-    );
-    if (result == null) return;
-
-    final f = result.files.single;
-    setState(() {
-      _fileName = f.name;
-      if (kIsWeb) {
-        _fileBytes = f.bytes;
-        _file = null;
-      } else {
-        _file = (f.path != null) ? File(f.path!) : null;
-        _fileBytes = null;
-      }
-
-      //  關鍵：每次重新選檔都清除舊的文件 ID / 來源
-      _collectionId = null;
-      _selectedSources.clear();
-
-      _uploadMsg = null;
-      _answer = null;
-      _sources = null;
-      _cost = null;
-      _history.clear();
-      _lastUploadCost = null;
-    });
-  }
-
-  // 上傳（Web 走 bytes；行動裝置走 path）
-  Future<void> _upload() async {
-    if (!kIsWeb && _file == null) return;
-    if (kIsWeb && (_fileBytes == null || _fileName == null)) return;
-
-    setState(() => _uploading = true);
+  Future<void> _pickAndUpload() async {
     try {
-      final resp = await _api.uploadFile(
-        file: kIsWeb ? null : _file,
-        bytes: kIsWeb ? _fileBytes : null,
-        filename: _fileName,
-        collectionId: _collectionId,
+      setState(() => _busy = true);
+
+      final result = await FilePicker.platform.pickFiles(withData: kIsWeb);
+      if (result == null || result.files.isEmpty) return;
+
+      final file = result.files.first;
+      final name = file.name;
+      Uint8List? bytes = file.bytes;
+      String? path = file.path;
+
+      // Web → 用 bytes；行動/桌面 → 用 path
+      final res = await _api.uploadFile(
+        filename: name,
+        bytes: kIsWeb ? bytes : null,
+        filepath: kIsWeb ? null : path,
+        // collectionId: null,  // 留空讓後端回傳 _default
+        mode: 'overwrite',
       );
 
       setState(() {
-        _uploadMsg = '✅ 上傳完成：${resp['message'] ?? 'OK'}';
-
-        // ✅ 只接受「有效的」 collectionId（排除 _default/空字串）
-        final cidRaw =
-            (resp['collection_id'] ?? resp['collectionId'])?.toString();
-        _collectionId =
-            (cidRaw != null && cidRaw.isNotEmpty && cidRaw != '_default')
-                ? cidRaw
-                : null;
-
-        final costMap = _parseCost(resp);
-        _lastUploadCost = costMap.isNotEmpty ? costMap : null;
+        _uploadMessage = res['message'] as String?;
+        _lastCollectionId = (res['collectionId'] as String?)?.trim();
       });
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text(
+                '上傳完成：${_uploadMessage ?? name}（collectionId: ${_lastCollectionId ?? "-"}）')),
+      );
     } catch (e) {
-      setState(() => _uploadMsg = '❌ 上傳失敗：$e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('上傳失敗：$e')),
+      );
     } finally {
-      setState(() => _uploading = false);
+      if (mounted) setState(() => _busy = false);
     }
   }
 
-  Map<String, dynamic> _parseCost(Map<String, dynamic> m) {
-    final flat = {
-      'total_usd': m['cost_usd'] ?? m['total_cost_usd'],
-      'embed_usd': m['embedding_cost'] ?? m['embed_cost_usd'],
-      'chat_usd': m['chat_cost'] ?? m['chat_cost_usd'],
-      'transcribe_cost': m['transcribe_cost'] ?? m['transcribe_cost_usd'],
-      'vision_cost': m['vision_cost'] ?? m['vision_cost_usd'],
-    }..removeWhere((k, v) => v == null);
-    if (flat.isNotEmpty) return flat;
-    for (final k in ['cost', 'usage']) {
-      final c = m[k];
-      if (c is Map) {
-        final kk = {
-          'total_usd': c['total_usd'] ?? c['total'] ?? c['cost_usd'],
-          'embed_usd': c['embed_usd'] ?? c['embedding'] ?? c['embedding_cost'],
-          'chat_usd': c['chat_usd'] ?? c['chat'] ?? c['chat_cost'],
-          'transcribe_cost': c['transcribe_cost'] ??
-              c['transcribe'] ??
-              c['transcribe_cost_usd'],
-          'vision_cost':
-              c['vision_cost'] ?? c['vision'] ?? c['vision_cost_usd'],
-        }..removeWhere((k, v) => v == null);
-        if (kk.isNotEmpty) return kk;
-      }
-    }
-    return {};
-  }
-
-// 發問
   Future<void> _ask() async {
     final q = _qCtrl.text.trim();
-    if (q.isEmpty) return;
-
-    setState(() {
-      _asking = true;
-      _answer = null;
-      _sources = null;
-      _cost = null;
-    });
+    if (q.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('請先輸入問題')),
+      );
+      return;
+    }
 
     try {
-      Map<String, dynamic> resp;
-      final parts = q.split(RegExp(r'\s+'));
+      setState(() {
+        _busy = true;
+        _answer = null;
+        _mode = null;
+        _sources = null;
+        _costTotal = _costEmbed = _costChat = _costTrans = 0;
+      });
 
-      if (parts.isNotEmpty && _api.isUrl(parts[0])) {
-        // 🔹 URL 模式：不要帶 sources
-        final url = parts[0];
-        final query = parts.length > 1 ? parts.sublist(1).join(' ') : '';
-        resp = await _api.fetchUrl(url: url, query: query, mode: _mode);
-      } else {
-        // 🔹 一般提問：只有真的有來源時才帶 sources
-        List<String>? activeSources;
-        if (_selectedSources.isNotEmpty) {
-          activeSources = _selectedSources;
-        } else if (_collectionId != null &&
-            _collectionId!.isNotEmpty &&
-            _collectionId != '_default') {// ← 關鍵過濾
-          activeSources = [_collectionId!];
-        } else {
-          activeSources = null; // 沒有來源就完全不傳
-        }
-
-        resp = await _api.ask(
-          question: q,
-          mode: _mode,
-          sources: activeSources, // ← 新增參數
-        );
-      }
+      final res = await _api.ask(
+        query: q,
+        topK: 5,
+        collectionId: _lastCollectionId, // 只有有值才會真的帶給後端
+      );
 
       setState(() {
-        final answerText = resp['answer']?.toString();
-        final sourcesList = (resp['sources'] as List<dynamic>?) ?? [];
-        final costData = _parseCost(resp);
-        final combinedCost = {...?_lastUploadCost, ...costData};
+        _answer = res['answer'] as String?;
+        _mode = res['mode'] as String?;
+        _sources = (res['sources'] as List?)?.toList();
 
-        final total = [
-          combinedCost['embed_usd'],
-          combinedCost['chat_usd'],
-          combinedCost['transcribe_cost'],
-          combinedCost['vision_cost'],
-        ].whereType<num>().fold(0.0, (sum, v) => sum + v);
-
-        combinedCost['total_usd'] = double.parse(total.toStringAsFixed(6));
-
-        _history.add({'answer': '👤 問：$q', 'sources': [], 'cost': {}});
-        _history.add({
-          'answer': answerText,
-          'sources': sourcesList,
-          'cost': combinedCost
-        });
-
-        _qCtrl.clear();
+        _costTotal = (res['cost_usd'] ?? 0) as num;
+        _costEmbed = (res['embedding_cost'] ?? 0) as num;
+        _costChat = (res['chat_cost'] ?? 0) as num;
+        _costTrans = (res['transcribe_cost'] ?? 0) as num;
       });
     } catch (e) {
-      setState(() {
-        _history.add({'answer': '❌ 提問失敗，須提供文件!：$e', 'sources': [], 'cost': {}});
-      });
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('提問失敗：$e')),
+      );
     } finally {
-      setState(() => _asking = false);
+      if (mounted) setState(() => _busy = false);
     }
+  }
+
+  void _clearDocs() {
+    setState(() {
+      _lastCollectionId = null;
+      _uploadMessage = null;
+      _sources = null;
+      _answer = null;
+      _mode = null;
+      _costTotal = _costEmbed = _costChat = _costTrans = 0;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('已清除文件狀態（改用一般知識回答）')),
+    );
+  }
+
+  Widget _buildHeader() {
+    return Row(
+      children: [
+        Expanded(
+          child: TextField(
+            controller: _qCtrl,
+            minLines: 1,
+            maxLines: 4,
+            decoration: const InputDecoration(
+              hintText: '輸入問題（例如：糖尿病是什麼？）',
+              border: OutlineInputBorder(),
+              contentPadding:
+                  EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        ElevatedButton.icon(
+          onPressed: _busy ? null : _ask,
+          icon: const Icon(Icons.send),
+          label: const Text('送出'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildToolbar() {
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: [
+        FilledButton.icon(
+          onPressed: _busy ? null : _pickAndUpload,
+          icon: const Icon(Icons.upload_file),
+          label: const Text('上傳文件 / 影片'),
+        ),
+        OutlinedButton.icon(
+          onPressed: _busy ? null : _clearDocs,
+          icon: const Icon(Icons.delete_outline),
+          label: const Text('清除文件狀態'),
+        ),
+        if (_lastCollectionId != null)
+          Chip(
+            avatar: const Icon(Icons.folder, size: 18),
+            label: Text('使用中文件：${_lastCollectionId!}'),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildAnswer() {
+    if (_answer == null && _uploadMessage == null) {
+      return const Text('尚未提問。你可以先上傳文件，或直接提問讓我用一般知識回答。');
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (_uploadMessage != null) ...[
+          Text('上傳結果：${_uploadMessage!}'),
+          const SizedBox(height: 6),
+        ],
+        if (_mode != null) Text('模式：${_mode == "doc" ? "📄 文件模式" : "🧠 一般模式"}'),
+        const SizedBox(height: 8),
+        if (_answer != null) ...[
+          const Text('回答：', style: TextStyle(fontWeight: FontWeight.bold)),
+          const SizedBox(height: 6),
+          SelectableText(_answer!),
+          const SizedBox(height: 12),
+        ],
+        if (_sources != null && _sources!.isNotEmpty) ...[
+          const Text('來源（前幾段）：', style: TextStyle(fontWeight: FontWeight.bold)),
+          const SizedBox(height: 6),
+          ..._sources!.map((s) => _SourceTile(s)).toList(),
+          const SizedBox(height: 12),
+        ],
+        Row(
+          children: [
+            _CostTag('total', _costTotal),
+            const SizedBox(width: 6),
+            _CostTag('embed', _costEmbed),
+            const SizedBox(width: 6),
+            _CostTag('chat', _costChat),
+            const SizedBox(width: 6),
+            _CostTag('trans', _costTrans),
+          ],
+        ),
+      ],
+    );
   }
 
   @override
   Widget build(BuildContext context) {
+    final pad = MediaQuery.of(context).size.width > 640 ? 16.0 : 12.0;
     return Scaffold(
-      appBar: AppBar(title: const Text('AI 問答')),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          // ----------------- 上傳區 -----------------
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    '上傳文件（PDF / DOCX / PPTX / TXT / HTML）',
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(_fileName ?? '尚未選擇檔案'),
-                      ),
-                      const SizedBox(width: 8),
-                      FilledButton.tonal(
-                        onPressed: _uploading ? null : _pickFile,
-                        child: const Text('選擇檔案'),
-                      ),
-                      const SizedBox(width: 8),
-                      FilledButton(
-                        onPressed:
-                            (_fileName == null || _uploading) ? null : _upload,
-                        child: _uploading
-                            ? const SizedBox(
-                                height: 16,
-                                width: 16,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : const Text('上傳'),
-                      ),
-                    ],
-                  ),
-                  if (_uploadMsg != null) ...[
-                    const SizedBox(height: 8),
-                    Text(_uploadMsg!),
-                  ],
-                  const SizedBox(height: 4),
-                  const Text('提示：若為影音請先提供字幕檔（SRT/VTT）。'),
-                ],
-              ),
-            ),
-          ),
-
-          const SizedBox(height: 12),
-
-          // ----------------- 問答區 -----------------
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('提問',
-                      style:
-                          TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-                  const SizedBox(height: 8),
-                  TextField(
-                    controller: _qCtrl,
-                    minLines: 1,
-                    maxLines: 4,
-                    decoration: const InputDecoration(hintText: '輸入問題…'),
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      DropdownButton<String>(
-                        value: _mode,
-                        items: const [
-                          DropdownMenuItem(value: 'auto', child: Text('自動模式')),
-                          DropdownMenuItem(value: 'doc', child: Text('僅文件')),
-                          DropdownMenuItem(
-                              value: 'general', child: Text('一般知識')),
-                        ],
-                        onChanged: (v) => setState(() => _mode = v ?? 'auto'),
-                      ),
-                      const Spacer(),
-                      FilledButton(
-                        onPressed: _asking ? null : _ask,
-                        child: _asking
-                            ? const SizedBox(
-                                height: 16,
-                                width: 16,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : const Text('送出'),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-          if (_history.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            for (final item in _history) ...[
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      if (item['cost'] != null &&
-                          (item['cost'] as Map).isNotEmpty) ...[
-                        if ((item['cost'] as Map).containsKey('total_usd'))
-                          Text(
-                              '總成本：\$${((item['cost'] as Map)['total_usd'] as num).toStringAsFixed(3)}'),
-                        if ((item['cost'] as Map).containsKey('embed_usd'))
-                          Text(
-                              '嵌入成本：\$${((item['cost'] as Map)['embed_usd'] as num).toStringAsFixed(3)}'),
-                        if ((item['cost'] as Map).containsKey('chat_usd'))
-                          Text(
-                              '聊天成本：\$${((item['cost'] as Map)['chat_usd'] as num).toStringAsFixed(3)}'),
-                        if ((item['cost'] as Map)
-                            .containsKey('transcribe_cost'))
-                          Text(
-                              '轉錄成本：\$${((item['cost'] as Map)['transcribe_cost'] as num).toStringAsFixed(3)}'),
-                        if ((item['cost'] as Map).containsKey('vision_cost'))
-                          Text(
-                              '視覺成本：\$${((item['cost'] as Map)['vision_cost'] as num).toStringAsFixed(3)}'),
-                        const SizedBox(height: 6),
-                      ],
-                      SelectableText(item['answer']?.toString() ?? ''),
-                      // if (item['sources'] != null && (item['sources'] as List).isNotEmpty) ...[
-                      //   const SizedBox(height: 8),
-                      //   const Text('引用來源', style: TextStyle(fontWeight: FontWeight.bold)),
-                      //   const SizedBox(height: 6),
-                      //   for (final s in (item['sources'] as List))
-                      //     _SourceTile(
-                      //       data: (s is Map)
-                      //           ? s.cast<String, dynamic>()
-                      //           : <String, dynamic>{'text': s.toString()},
-                      //     ),
-                      // ],
-                    ],
+      appBar: AppBar(title: const Text('醫學問答')),
+      body: AbsorbPointer(
+        absorbing: _busy,
+        child: AnimatedOpacity(
+          duration: const Duration(milliseconds: 150),
+          opacity: _busy ? 0.6 : 1.0,
+          child: Padding(
+            padding: EdgeInsets.all(pad),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _buildHeader(),
+                const SizedBox(height: 12),
+                _buildToolbar(),
+                const Divider(height: 24),
+                Expanded(
+                  child: SingleChildScrollView(
+                    child: _buildAnswer(),
                   ),
                 ),
-              ),
-              const SizedBox(height: 12),
-            ],
-          ],
-        ],
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
 }
 
-// 引用來源項目
 class _SourceTile extends StatelessWidget {
-  final Map<String, dynamic> data;
-  const _SourceTile({required this.data, super.key});
+  final Map data;
+  const _SourceTile(this.data);
 
   @override
   Widget build(BuildContext context) {
-    return ListTile(
-      title: Text(cleanSnippet(data['text'] ?? '')),
-      subtitle: data['source'] != null ? Text(data['source']) : null,
+    final snippet = (data['snippet'] ?? data['text'] ?? '') as String? ?? '';
+    final src = (data['source'] ?? '') as String? ?? '';
+    final page = data['page'];
+    final score = data['score'];
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        border: Border.all(color: Theme.of(context).dividerColor),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: DefaultTextStyle(
+        style: Theme.of(context).textTheme.bodyMedium!,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (src.isNotEmpty)
+              Text('來源：$src',
+                  style: const TextStyle(fontWeight: FontWeight.bold)),
+            if (page != null) Text('頁碼：$page'),
+            if (score != null) Text('分數：$score'),
+            const SizedBox(height: 6),
+            Text(snippet),
+          ],
+        ),
+      ),
     );
   }
+}
 
-  String cleanSnippet(String s) {
-    if (s.isEmpty) return s;
-    var t = s;
-    t = t.replaceAll(RegExp(r'[\u0000-\u001F\u007F]'), '');
-    t = t.replaceAll(RegExp(r'[\u200B-\u200D\uFEFF]'), '');
-    t = t.replaceAll(RegExp(r'[\[\(]\d{2}:\d{2}(?::\d{2})?[\]\)]'), '');
-    t = t.replaceAll('\n', ' ');
-    t = t.replaceAll(RegExp(r'\s+'), ' ').trim();
-    return t;
+class _CostTag extends StatelessWidget {
+  final String label;
+  final num value;
+  const _CostTag(this.label, this.value);
+
+  @override
+  Widget build(BuildContext context) {
+    return Chip(
+      label: Text('$label: ${value.toStringAsFixed(6)}'),
+    );
   }
 }
