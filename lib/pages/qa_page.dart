@@ -37,22 +37,43 @@ class _QAPageState extends State<QAPage> {
     try {
       setState(() => _busy = true);
 
-      final result = await FilePicker.platform.pickFiles(withData: kIsWeb);
+      // Web 一定要 withData: true 才會有 bytes
+      final result = await FilePicker.platform.pickFiles(
+        allowMultiple: false,
+        withData: kIsWeb, // ← 這行很重要（Web 需要）
+        type: FileType.any,
+      );
       if (result == null || result.files.isEmpty) return;
 
       final file = result.files.first;
-      final name = file.name;
-      Uint8List? bytes = file.bytes;
-      String? path = file.path;
+      final name = file.name; // 只顯示 name，不碰 path
 
-      // Web → 用 bytes；行動/桌面 → 用 path
-      final res = await _api.uploadFile(
-        filename: name,
-        bytes: kIsWeb ? bytes : null,
-        filepath: kIsWeb ? null : path,
-        // collectionId: null,  // 留空讓後端回傳 _default
-        mode: 'overwrite',
-      );
+      Map<String, dynamic> res;
+
+      if (kIsWeb) {
+        // ✅ Web：用 bytes 上傳，完全不要讀 file.path
+        final Uint8List? bytes = file.bytes;
+        if (bytes == null) {
+          throw Exception('這個瀏覽器沒有給 bytes，請確認 pickFiles(withData: true)');
+        }
+        res = await _api.uploadFile(
+          filename: name,
+          bytes: bytes,
+          // collectionId: null, // 不填，後端會回 _default
+          mode: 'overwrite',
+        );
+      } else {
+        // ✅ Android/iOS/桌面：用本機路徑
+        final String? path = file.path;
+        if (path == null) {
+          throw Exception('未取得本機路徑，請重新選擇檔案');
+        }
+        res = await _api.uploadFile(
+          filename: name,
+          filepath: path,
+          mode: 'overwrite',
+        );
+      }
 
       setState(() {
         _uploadMessage = res['message'] as String?;
@@ -203,7 +224,8 @@ class _QAPageState extends State<QAPage> {
           SelectableText(_answer!),
           const SizedBox(height: 12),
         ],
-        if (_sources != null && _sources!.isNotEmpty) ...[
+        // if (_sources != null && _sources!.isNotEmpty) ...[
+        if (false) ...[     
           const Text('來源（前幾段）：', style: TextStyle(fontWeight: FontWeight.bold)),
           const SizedBox(height: 6),
           ..._sources!.map((s) => _SourceTile(s)).toList(),
@@ -279,12 +301,12 @@ class _SourceTile extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (src.isNotEmpty)
-              Text('來源：$src',
-                  style: const TextStyle(fontWeight: FontWeight.bold)),
-            if (page != null) Text('頁碼：$page'),
-            if (score != null) Text('分數：$score'),
-            const SizedBox(height: 6),
+            // if (src.isNotEmpty)
+            //   Text('來源：$src',
+            //       style: const TextStyle(fontWeight: FontWeight.bold)),
+            // if (page != null) Text('頁碼：$page'),
+            // if (score != null) Text('分數：$score'),
+            // const SizedBox(height: 6),
             Text(snippet),
           ],
         ),
