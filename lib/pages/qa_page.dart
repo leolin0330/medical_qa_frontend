@@ -16,6 +16,26 @@ class _QAPageState extends State<QAPage> {
   final _api = ApiClient();
   final _qCtrl = TextEditingController();
 
+  // 把第一個網址抓出來，其餘視為使用者指令（例如：整理重點/摘要）
+  final _urlRegex = RegExp(r'(https?://[^\s]+)', caseSensitive: false);
+
+  ({String? url, String? instruction, String? pureText})
+      _splitUrlAndInstruction(String raw) {
+    final text = raw.trim();
+    final m = _urlRegex.firstMatch(text);
+    if (m == null) {
+      // 純文字
+      return (
+        url: null,
+        instruction: null,
+        pureText: text.isEmpty ? null : text
+      );
+    }
+    final url = m.group(0)!;
+    final inst = text.replaceFirst(url, '').trim();
+    return (url: url, instruction: inst.isEmpty ? null : inst, pureText: null);
+  }
+
   String? _lastCollectionId; // 最近一次上傳成功的 collectionId（例如 "_default"）
   String? _uploadMessage; // 顯示上傳結果
   bool _busy = false;
@@ -33,37 +53,104 @@ class _QAPageState extends State<QAPage> {
     super.dispose();
   }
 
+  // Future<void> _pickAndUpload() async {
+  //   try {
+  //     print("[DEBUG] 檔案選擇觸發了"); // 先確認點擊有觸發
+
+  //     // ❶ 先讓使用者選檔案（不要在這之前 setState）
+  //     final result = await FilePicker.platform.pickFiles(
+  //       allowMultiple: false,
+  //       withData: kIsWeb, // ← Web 一定要
+  //       type: FileType.any,
+  //     );
+
+  //     // 如果沒選檔案就直接結束
+  //     if (result == null || result.files.isEmpty) return;
+
+  //     // ❷ 使用者真的選了檔案後，才進入 busy 狀態
+  //     setState(() => _busy = true);
+
+  //     final file = result.files.first;
+  //     final name = file.name;
+
+  //     Map<String, dynamic> res;
+
+  //     if (kIsWeb) {
+  //       // ✅ Web：用 bytes 上傳
+  //       final Uint8List? bytes = file.bytes;
+  //       if (bytes == null) {
+  //         throw Exception('這個瀏覽器沒有給 bytes，請確認 pickFiles(withData: true)');
+  //       }
+  //       res = await _api.uploadFile(
+  //         filename: name,
+  //         bytes: bytes,
+  //         mode: 'overwrite',
+  //       );
+  //     } else {
+  //       // ✅ Android/iOS：用本機路徑
+  //       final String? path = file.path;
+  //       if (path == null) {
+  //         throw Exception('未取得本機路徑，請重新選擇檔案');
+  //       }
+  //       res = await _api.uploadFile(
+  //         filename: name,
+  //         filepath: path,
+  //         mode: 'overwrite',
+  //       );
+  //     }
+
+  //     // 顯示結果
+  //     setState(() {
+  //       _uploadMessage = res['message'] as String?;
+  //       _lastCollectionId = (res['collectionId'] as String?)?.trim();
+  //     });
+
+  //     if (!mounted) return;
+  //     ScaffoldMessenger.of(context).showSnackBar(
+  //       SnackBar(
+  //         content: Text(
+  //           '上傳完成：${_uploadMessage ?? name}（collectionId: ${_lastCollectionId ?? "-"}）',
+  //         ),
+  //       ),
+  //     );
+  //   } catch (e) {
+  //     if (!mounted) return;
+  //     ScaffoldMessenger.of(context).showSnackBar(
+  //       SnackBar(content: Text('上傳失敗：$e')),
+  //     );
+  //   } finally {
+  //     if (mounted) setState(() => _busy = false);
+  //   }
+  // }
+
   Future<void> _pickAndUpload() async {
     try {
-      setState(() => _busy = true);
-
-      // Web 一定要 withData: true 才會有 bytes
+      // ❶ 先開檔案選擇器（此時不要 setState / 不要進 busy）
       final result = await FilePicker.platform.pickFiles(
         allowMultiple: false,
-        withData: kIsWeb, // ← 這行很重要（Web 需要）
+        withData: kIsWeb, // Web 必須用 bytes
         type: FileType.any,
       );
       if (result == null || result.files.isEmpty) return;
 
+      // ❷ 使用者真的選了檔案，再進入 busy 狀態
+      setState(() => _busy = true);
+
       final file = result.files.first;
-      final name = file.name; // 只顯示 name，不碰 path
+      final name = file.name;
 
       Map<String, dynamic> res;
-
       if (kIsWeb) {
-        // ✅ Web：用 bytes 上傳，完全不要讀 file.path
         final Uint8List? bytes = file.bytes;
         if (bytes == null) {
-          throw Exception('這個瀏覽器沒有給 bytes，請確認 pickFiles(withData: true)');
+          throw Exception('瀏覽器沒有給 bytes，請確認 pickFiles(withData: true)');
         }
         res = await _api.uploadFile(
           filename: name,
           bytes: bytes,
-          // collectionId: null, // 不填，後端會回 _default
           mode: 'overwrite',
         );
       } else {
-        // ✅ Android/iOS/桌面：用本機路徑
         final String? path = file.path;
         if (path == null) {
           throw Exception('未取得本機路徑，請重新選擇檔案');
@@ -114,10 +201,15 @@ class _QAPageState extends State<QAPage> {
         _costTotal = _costEmbed = _costChat = _costTrans = 0;
       });
 
+      final parts = _splitUrlAndInstruction(q);
+
+      // 有網址（純網址或「網址+指令」）→ 分欄位送；否則當純文字
       final res = await _api.ask(
-        query: q,
+        query: parts.pureText, // 只有純文字時才會有值
+        url: parts.url, // 有網址才送
+        instruction: parts.instruction, // 有指令才送（例如「整理重點」）
         topK: 5,
-        collectionId: _lastCollectionId, // 只有有值才會真的帶給後端
+        collectionId: _lastCollectionId, // 有值才會傳到後端
       );
 
       setState(() {
@@ -186,7 +278,7 @@ class _QAPageState extends State<QAPage> {
       runSpacing: 8,
       children: [
         FilledButton.icon(
-          onPressed: _busy ? null : _pickAndUpload,
+          onPressed: _pickAndUpload,
           icon: const Icon(Icons.upload_file),
           label: const Text('上傳文件 / 影片'),
         ),
@@ -225,7 +317,7 @@ class _QAPageState extends State<QAPage> {
           const SizedBox(height: 12),
         ],
         // if (_sources != null && _sources!.isNotEmpty) ...[
-        if (false) ...[     
+        if (false) ...[
           const Text('來源（前幾段）：', style: TextStyle(fontWeight: FontWeight.bold)),
           const SizedBox(height: 6),
           ..._sources!.map((s) => _SourceTile(s)).toList(),
@@ -251,27 +343,24 @@ class _QAPageState extends State<QAPage> {
     final pad = MediaQuery.of(context).size.width > 640 ? 16.0 : 12.0;
     return Scaffold(
       appBar: AppBar(title: const Text('醫學問答')),
-      body: AbsorbPointer(
-        absorbing: _busy,
-        child: AnimatedOpacity(
-          duration: const Duration(milliseconds: 150),
-          opacity: _busy ? 0.6 : 1.0,
-          child: Padding(
-            padding: EdgeInsets.all(pad),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _buildHeader(),
-                const SizedBox(height: 12),
-                _buildToolbar(),
-                const Divider(height: 24),
-                Expanded(
-                  child: SingleChildScrollView(
-                    child: _buildAnswer(),
-                  ),
+      body: AnimatedOpacity(
+        duration: const Duration(milliseconds: 150),
+        opacity: _busy ? 0.6 : 1.0,
+        child: Padding(
+          padding: EdgeInsets.all(pad),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildHeader(),
+              const SizedBox(height: 12),
+              _buildToolbar(),
+              const Divider(height: 24),
+              Expanded(
+                child: SingleChildScrollView(
+                  child: _buildAnswer(),
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ),
