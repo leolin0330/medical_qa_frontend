@@ -6,8 +6,8 @@ import 'package:http_parser/http_parser.dart' show MediaType;
 
 const String kBaseUrl = String.fromEnvironment(
   'API_BASE_URL',
-  // defaultValue: 'http://10.0.2.2:8000', // Android 模擬器
-  defaultValue: 'http://192.168.4.205:8000', // 你目前的 CHROME 測試位址
+  defaultValue: 'http://10.0.2.2:8000', // Android 模擬器
+  // defaultValue: 'http://192.168.4.205:8000', // 你目前的 CHROME 測試位址
   // defaultValue: 'http://127.0.0.1:8000',   // 手機接線測試
   // defaultValue: 'https://<your-cloud-run-url>',
 );
@@ -165,4 +165,38 @@ class ApiClient {
   }
 
   void close() => _client.close();
+
+  // =======================
+  // 4) WHO 新聞列表
+  // =======================
+  /// 呼叫後端 GET /news?source=who&limit=10
+  /// 回傳那個 JSON 裡的 items：
+  ///   [
+  ///     { "title": ..., "url": ..., "published": ..., "summary": ..., "image": ..., "source": "WHO" },
+  ///     ...
+  ///   ]
+  Future<List<Map<String, dynamic>>> fetchNews({
+    String source = 'who',
+    int limit = 10,
+  }) async {
+    final uri = Uri.parse('$kBaseUrl/news').replace(queryParameters: {
+      'source': source,
+      'limit': limit.toString(),
+    });
+
+    final res = await http.get(
+      uri,
+      headers: const {
+        'accept': 'application/json',
+      },
+    );
+
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      throw Exception('Fetch news failed: ${res.statusCode} ${res.body}');
+    }
+
+    final decoded = json.decode(res.body) as Map<String, dynamic>;
+    final items = decoded['items'] as List<dynamic>? ?? [];
+    return items.cast<Map<String, dynamic>>();
+  }
 }
