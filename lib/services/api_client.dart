@@ -6,8 +6,8 @@ import 'package:http_parser/http_parser.dart' show MediaType;
 
 const String kBaseUrl = String.fromEnvironment(
   'API_BASE_URL',
-  defaultValue: 'http://10.0.2.2:8000', // Android 模擬器
-  // defaultValue: 'http://192.168.4.205:8000', // 你目前的 CHROME 測試位址
+  // defaultValue: 'http://10.0.2.2:8000', // Android 模擬器
+  defaultValue: 'http://192.168.4.205:8000', // 你目前的 CHROME 測試位址
   // defaultValue: 'http://127.0.0.1:8000',   // 手機接線測試
   // defaultValue: 'https://<your-cloud-run-url>',
 );
