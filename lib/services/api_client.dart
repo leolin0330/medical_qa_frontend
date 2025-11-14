@@ -178,23 +178,34 @@ class ApiClient {
   Future<List<Map<String, dynamic>>> fetchNews({
     String source = 'who',
     int limit = 10,
+    String? lang, // 語言參數
   }) async {
-    final uri = Uri.parse('$kBaseUrl/news').replace(queryParameters: {
+    // 組合查詢參數
+    final query = <String, String>{
       'source': source,
       'limit': limit.toString(),
-    });
+    };
 
+    //  如果 lang 有值（例如 'zh-TW'），加入查詢參數
+    if (lang != null && lang.isNotEmpty) {
+      query['lang'] = lang;
+    }
+
+    // 組 URI
+    final uri = Uri.parse('$kBaseUrl/news').replace(queryParameters: query);
+
+    // 發送請求
     final res = await http.get(
       uri,
-      headers: const {
-        'accept': 'application/json',
-      },
+      headers: const {'accept': 'application/json'},
     );
 
+    // 檢查錯誤
     if (res.statusCode < 200 || res.statusCode >= 300) {
       throw Exception('Fetch news failed: ${res.statusCode} ${res.body}');
     }
 
+    // 解析 JSON
     final decoded = json.decode(res.body) as Map<String, dynamic>;
     final items = decoded['items'] as List<dynamic>? ?? [];
     return items.cast<Map<String, dynamic>>();
