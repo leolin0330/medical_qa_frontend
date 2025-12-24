@@ -1,7 +1,7 @@
 
 
 import 'package:flutter/material.dart';
-
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 // 這些路徑依你的專案結構調整：
 // （依你前面提供的檔案名）
 import 'pages/qa_page.dart';
@@ -11,7 +11,7 @@ import 'pages/news_page.dart';
 import 'pages/me_page.dart';
 
 void main() {
-  runApp(const MyApp());
+  runApp(const ProviderScope(child: MyApp()));
 }
 
 class MyApp extends StatelessWidget {
