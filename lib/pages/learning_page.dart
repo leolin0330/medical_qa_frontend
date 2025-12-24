@@ -1,219 +1,251 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:http/http.dart' as http;
+import 'package:url_launcher/url_launcher.dart';
 
-
-class LearningPage extends StatelessWidget {
-const LearningPage({super.key});
-
-
-@override
-Widget build(BuildContext context) {
-return const Scaffold(
-body: Center(child: Text('學習（題庫/解析 之後串 /quiz）')),
-);
+// A simple data model for a Paper (if not already defined elsewhere in the project)
+class Paper {
+  final double score;
+  final String title;
+  final String url;
+  final String journal;
+  final int year;
+  final int citations;
+  final String abstractText;
+  Paper({
+    required this.score,
+    required this.title,
+    required this.url,
+    required this.journal,
+    required this.year,
+    required this.citations,
+    required this.abstractText,
+  });
+  factory Paper.fromJson(Map<String, dynamic> json) {
+    return Paper(
+      score: (json['gpt_score'] ?? json['score'] ?? 0).toDouble(),
+      title: json['title'] ?? 'Untitled',
+      url: json['url'] ?? '',
+      journal: json['journal'] ?? 'Unknown Journal',
+      year: json['year'] ?? 0,
+      citations: json['citations'] ?? 0,
+      abstractText: json['abstract'] ?? '',
+    );
+  }
 }
+
+// Riverpod FutureProvider (family) to fetch papers for a given query
+final papersSearchProvider = FutureProvider.family<List<Paper>, String>((ref, query) async {
+  // Replace BASE_URL with the actual base URL of the backend if needed
+  final Uri apiUri = Uri.parse(/* BASE_URL + */ '/find_papers');
+  final response = await http.post(
+    apiUri,
+    headers: {'Content-Type': 'application/json'},
+    body: jsonEncode({'query': query, 'top_k': 5}),
+  );
+  if (response.statusCode == 200) {
+    final data = jsonDecode(response.body);
+    // Expecting data to be a list of paper info
+    if (data is List) {
+      return data.map((item) => Paper.fromJson(item)).toList();
+    } else if (data is Map && data.containsKey('papers')) {
+      // If response has a nested structure { "papers": [...] }
+      final papersList = data['papers'] as List;
+      return papersList.map((item) => Paper.fromJson(item)).toList();
+    } else {
+      // Unexpected format
+      return [];
+    }
+  } else {
+    // If the API returns an error status, throw exception to trigger error state
+    throw Exception('Failed to load papers (status ${response.statusCode})');
+  }
+});
+
+class LearningPage  extends ConsumerStatefulWidget {
+  const LearningPage ({Key? key}) : super(key: key);
+
+  @override
+  ConsumerState<LearningPage > createState() => _LearningPageState();
 }
 
+class _LearningPageState extends ConsumerState<LearningPage > {
+  late TextEditingController _queryController;
+  String? _searchQuery; // The current query to search for
+  List<bool> _isExpandedList = []; // Track abstract expansion for each result
 
-// import 'package:flutter/material.dart';
-// import 'package:url_launcher/url_launcher.dart';
+  @override
+  void initState() {
+    super.initState();
+    _queryController = TextEditingController();
+  }
 
-// import '../services/api_client.dart';
+  @override
+  void dispose() {
+    _queryController.dispose();
+    super.dispose();
+  }
 
-// class NewsPage extends StatefulWidget {
-//   const NewsPage({super.key});
+  Future<void> _launchPaperUrl(String url) async {
+    if (url.isEmpty) return;
+    final Uri uri = Uri.parse(url);
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri);
+    } else {
+      // Could not launch URL – handle gracefully (e.g., show a snackbar)
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('无法打开论文链接')),
+      );
+    }
+  }
 
-//   @override
-//   State<NewsPage> createState() => _NewsPageState();
-// }
+  void _onSearchPressed() {
+    final queryText = _queryController.text.trim();
+    if (queryText.isEmpty) {
+      // If query is empty, you might show a message or just do nothing
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('请输入查询关键字')),
+      );
+      return;
+    }
+    // Update the search query and trigger provider fetch
+    setState(() {
+      _searchQuery = queryText;
+      _isExpandedList = []; // reset expansion states for new search
+    });
+  }
 
-// class _NewsPageState extends State<NewsPage> {
-//   final _api = ApiClient();
-//   late Future<List<Map<String, dynamic>>> _future;
+  @override
+  Widget build(BuildContext context) {
+    // Watch the search provider only when a query is set
+    final AsyncValue<List<Paper>> papersAsync = (_searchQuery != null)
+        ? ref.watch(papersSearchProvider(_searchQuery!))
+        : const AsyncValue.data([]); // empty data when no search yet
 
-//   @override
-//   void initState() {
-//     super.initState();
-//     _future = _load();
-//   }
-
-//   @override
-//   void dispose() {
-//     _api.close();
-//     super.dispose();
-//   }
-
-//   Future<List<Map<String, dynamic>>> _load() {
-//     return _api.fetchNews(source: 'who', limit: 10);
-//   }
-
-//   Future<void> _refresh() async {
-//     setState(() {
-//       _future = _load();
-//     });
-//     await _future;
-//   }
-
-//   Future<void> _openUrl(String? url) async {
-//     if (url == null || url.isEmpty) return;
-//     final uri = Uri.parse(url);
-//     final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
-//     if (!ok && mounted) {
-//       ScaffoldMessenger.of(context).showSnackBar(
-//         const SnackBar(content: Text('無法開啟連結')),
-//       );
-//     }
-//   }
-
-//   @override
-//   Widget build(BuildContext context) {
-//     final theme = Theme.of(context);
-
-//     return Scaffold(
-//       appBar: AppBar(
-//         title: const Text('WHO 快訊'),
-//       ),
-//       body: RefreshIndicator(
-//         onRefresh: _refresh,
-//         child: FutureBuilder<List<Map<String, dynamic>>>(
-//           future: _future,
-//           builder: (context, snap) {
-//             if (snap.connectionState == ConnectionState.waiting) {
-//               return const Center(child: CircularProgressIndicator());
-//             }
-//             if (snap.hasError) {
-//               return ListView(
-//                 children: [
-//                   const SizedBox(height: 80),
-//                   Icon(Icons.error_outline, size: 48, color: theme.colorScheme.error),
-//                   const SizedBox(height: 12),
-//                   Center(
-//                     child: Padding(
-//                       padding: const EdgeInsets.symmetric(horizontal: 16),
-//                       child: Text(
-//                         '載入失敗：${snap.error}',
-//                         textAlign: TextAlign.center,
-//                       ),
-//                     ),
-//                   ),
-//                   const SizedBox(height: 8),
-//                   Center(
-//                     child: TextButton.icon(
-//                       onPressed: _refresh,
-//                       icon: const Icon(Icons.refresh),
-//                       label: const Text('重新整理'),
-//                     ),
-//                   ),
-//                 ],
-//               );
-//             }
-
-//             final items = snap.data ?? const [];
-//             if (items.isEmpty) {
-//               return ListView(
-//                 children: const [
-//                   SizedBox(height: 120),
-//                   Center(child: Text('目前沒有可顯示的新聞')),
-//                 ],
-//               );
-//             }
-
-//             return ListView.separated(
-//               itemCount: items.length,
-//               separatorBuilder: (_, __) => const Divider(height: 1),
-//               itemBuilder: (context, i) {
-//                 final item = items[i];
-//                 final title = (item['title'] as String? ?? '').trim();
-//                 final date = (item['published'] as String? ?? '').trim();
-//                 final summary = (item['summary'] as String? ?? '').trim();
-//                 final imageUrl = (item['image'] as String? ?? '').trim();
-//                 final url = (item['url'] as String? ?? '').trim();
-
-//                 return InkWell(
-//                   onTap: () => _openUrl(url),
-//                   child: Padding(
-//                     padding: const EdgeInsets.all(12),
-//                     child: Row(
-//                       crossAxisAlignment: CrossAxisAlignment.start,
-//                       children: [
-//                         // 左側縮圖
-//                         SizedBox(
-//                           width: 72,
-//                           height: 72,
-//                           child: ClipRRect(
-//                             borderRadius: BorderRadius.circular(8),
-//                             child: imageUrl.isNotEmpty
-//                                 ? Image.network(
-//                                     imageUrl,
-//                                     fit: BoxFit.cover,
-//                                     errorBuilder: (_, __, ___) =>
-//                                         const Icon(Icons.article_outlined, size: 36),
-//                                   )
-//                                 : const DecoratedBox(
-//                                     decoration: BoxDecoration(color: Color(0xFFEFEFEF)),
-//                                     child: Center(
-//                                       child: Icon(Icons.article_outlined, size: 36),
-//                                     ),
-//                                   ),
-//                           ),
-//                         ),
-//                         const SizedBox(width: 12),
-//                         // 右側文字
-//                         Expanded(
-//                           child: Column(
-//                             crossAxisAlignment: CrossAxisAlignment.start,
-//                             children: [
-//                               if (date.isNotEmpty)
-//                                 Text(
-//                                   date,
-//                                   style: theme.textTheme.bodySmall?.copyWith(
-//                                     fontWeight: FontWeight.w600,
-//                                   ),
-//                                 ),
-//                               const SizedBox(height: 4),
-//                               Text(
-//                                 title,
-//                                 maxLines: 2,
-//                                 overflow: TextOverflow.ellipsis,
-//                                 style: theme.textTheme.titleMedium?.copyWith(
-//                                   fontWeight: FontWeight.w700,
-//                                 ),
-//                               ),
-//                               if (summary.isNotEmpty) ...[
-//                                 const SizedBox(height: 6),
-//                                 Text(
-//                                   summary,
-//                                   maxLines: 3,
-//                                   overflow: TextOverflow.ellipsis,
-//                                   style: theme.textTheme.bodyMedium,
-//                                 ),
-//                               ],
-//                               const SizedBox(height: 6),
-//                               Row(
-//                                 children: [
-//                                   Text(
-//                                     '查看原文',
-//                                     style: theme.textTheme.bodySmall?.copyWith(
-//                                       color: theme.colorScheme.primary,
-//                                       fontWeight: FontWeight.w600,
-//                                     ),
-//                                   ),
-//                                   const SizedBox(width: 4),
-//                                   Icon(Icons.open_in_new,
-//                                       size: 14, color: theme.colorScheme.primary),
-//                                 ],
-//                               ),
-//                             ],
-//                           ),
-//                         ),
-//                       ],
-//                     ),
-//                   ),
-//                 );
-//               },
-//             );
-//           },
-//         ),
-//       ),
-//     );
-//   }
-// }
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('论文百科'), // "Paper Encyclopedia" title (adjust as needed)
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          children: [
+            // Search input field and button
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _queryController,
+                    decoration: const InputDecoration(
+                      hintText: '输入关键词搜索论文...', // hint in Chinese for "Enter keywords..."
+                      border: OutlineInputBorder(),
+                      contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    ),
+                    textInputAction: TextInputAction.search,
+                    onSubmitted: (_) => _onSearchPressed(),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  onPressed: _onSearchPressed,
+                  child: const Text('搜索'), // "Search" button text in Chinese
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            // Results area
+            Expanded(
+              child: papersAsync.when(
+                data: (papers) {
+                  // Initialize expansion state list if not yet (e.g., first time data comes in)
+                  if (_isExpandedList.length != papers.length) {
+                    _isExpandedList = List.filled(papers.length, false);
+                  }
+                  if (papers.isEmpty) {
+                    return const Center(
+                      child: Text('未找到相关论文'), // "No papers found"
+                    );
+                  }
+                  // Use ListView to display paper cards
+                  return ListView.builder(
+                    itemCount: papers.length,
+                    itemBuilder: (context, index) {
+                      final paper = papers[index];
+                      final bool isExpanded = _isExpandedList[index];
+                      // Short preview of abstract (for collapsed state)
+                      String previewText = paper.abstractText;
+                      if (!isExpanded && previewText.length > 150) {
+                        // truncate to 150 chars for preview
+                        previewText = '${previewText.substring(0, 150)}...';
+                      }
+                      return Card(
+                        elevation: 2,
+                        margin: const EdgeInsets.symmetric(vertical: 8),
+                        child: Padding(
+                          padding: const EdgeInsets.all(12.0),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              // Title (clickable link)
+                              GestureDetector(
+                                onTap: () => _launchPaperUrl(paper.url),
+                                child: Text(
+                                  paper.title,
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.bold,
+                                    color: Theme.of(context).colorScheme.primary,
+                                    decoration: TextDecoration.underline,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              // Meta information: Journal, Year, Citations, Score
+                              Text(
+                                '${paper.journal} (${paper.year})',
+                                style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                              ),
+                              Text(
+                                '引用次数: ${paper.citations}    GPT评分: ${paper.score.toStringAsFixed(2)}',
+                                style: TextStyle(fontSize: 13, color: Theme.of(context).textTheme.bodySmall?.color),
+                              ),
+                              const SizedBox(height: 8),
+                              // Abstract (expandable)
+                              Text(
+                                isExpanded ? paper.abstractText : previewText,
+                                style: const TextStyle(fontSize: 14),
+                              ),
+                              if (paper.abstractText.length > 150) // only show toggle if text is long
+                                Align(
+                                  alignment: Alignment.centerRight,
+                                  child: TextButton(
+                                    onPressed: () {
+                                      setState(() {
+                                        _isExpandedList[index] = !_isExpandedList[index];
+                                      });
+                                    },
+                                    child: Text(isExpanded ? '收起摘要' : '展开摘要'), // "Collapse abstract" / "Expand abstract"
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  );
+                },
+                loading: () => const Center(child: CircularProgressIndicator()),
+                error: (error, stackTrace) {
+                  return Center(
+                    child: Text('搜索出错：$error'), // "Search error: $error"
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
